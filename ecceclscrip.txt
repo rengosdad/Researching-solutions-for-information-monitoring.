@@ -1,4 +1,4 @@
-const API_KEY = "AIzaSyBnnEd3GjaPipZWEu2UGATdHqW9cRH_beA";
+const API_KEY = "API genimini ";
 function onOpen() {
   var ui = SpreadsheetApp.getUi();
   ui.createMenu('🍄 AI Quy Trình Nấm')
@@ -172,4 +172,5 @@ function lapLoTrinh() {
   } catch (e) {
     SpreadsheetApp.getUi().alert("Lỗi: " + e.toString());
   }
+
 }
