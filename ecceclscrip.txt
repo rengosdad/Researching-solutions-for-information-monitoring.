@@ -1,0 +1,175 @@
+const API_KEY = "AIzaSyBnnEd3GjaPipZWEu2UGATdHqW9cRH_beA";
+function onOpen() {
+  var ui = SpreadsheetApp.getUi();
+  ui.createMenu('🍄 AI Quy Trình Nấm')
+    .addItem('Lập quy trình trồng', 'lapQuyTrinh')
+    .addItem('Lập lộ trình chi tiết', 'lapLoTrinh')
+    .addToUi();
+}
+// Hàm gửi yêu cầu có cơ chế thử lại nếu quá tải
+function fetchWithRetry(url, options, maxRetries = 3) {
+  let retries = 0;
+  while (retries < maxRetries) {
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      if (response.getResponseCode() === 200) return response;
+    } catch (e) {
+      if (e.toString().includes("503") || e.toString().includes("429")) {
+        retries++;
+        Utilities.sleep(3000 * retries);
+      } else {
+        throw e;
+      }
+    }
+  }
+  throw new Error("Google AI đang bận. Vui lòng thử lại sau 1 phút.");
+}
+function lapQuyTrinh() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const tenNam = sheet.getRange("A2").getValue(); // Nhập tên nấm ở ô A2
+ 
+  if (!tenNam) return SpreadsheetApp.getUi().alert("Hãy nhập tên loại nấm vào ô A2 (Ví dụ: Nấm Mối Đen)");
+  // Xóa dữ liệu cũ từ dòng 4 trở đi để bảng sạch sẽ
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 3) {
+    sheet.getRange(4, 1, lastRow - 3, 6).clearContent().clearFormat();
+  }
+  try {
+    // 1. Tự động tìm model (giữ nguyên logic dò tìm model tốt nhất)
+    const modelUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`;
+    const resModels = fetchWithRetry(modelUrl, { "method": "get" });
+    const modelsJson = JSON.parse(resModels.getContentText());
+   
+    let selectedModel = modelsJson.models.find(m => m.name.includes("gemini-1.5-flash"))?.name ||
+                        modelsJson.models.find(m => m.supportedGenerationMethods.includes("generateContent"))?.name;
+    // 2. Prompt chuyên biệt để tạo LỘ TRÌNH (Danh sách nhiều dòng)
+    const prompt = `Lập bảng quy trình kỹ thuật trồng nấm "${tenNam}" chi tiết từ A-Z.
+    Trả về kết quả dưới dạng JSON là một Mảng (Array) các bước.
+    Các trường (key) bắt buộc:
+    - "giaidoan" (Ví dụ: Xử lý nguyên liệu, Cấy giống, Chăm sóc...)
+    - "thoigian" (Ví dụ: Ngày 1-3, Ngày 4...)
+    - "nhietdo" (Ví dụ: 28-32 độ C)
+    - "doam" (Ví dụ: 65-70%)
+    - "congviec" (Mô tả chi tiết công việc cần làm)
+    - "luuy" (Lưu ý quan trọng)
+   
+    Chỉ trả về JSON thuần, không kèm markdown.`;
+   
+    const url = `https://generativelanguage.googleapis.com/v1beta/${selectedModel}:generateContent?key=${API_KEY}`;
+    const payload = { "contents": [{ "parts": [{ "text": prompt }] }] };
+    const options = { "method": "post", "contentType": "application/json", "payload": JSON.stringify(payload) };
+   
+    const response = fetchWithRetry(url, options);
+    const resultText = JSON.parse(response.getContentText()).candidates[0].content.parts[0].text;
+    const cleanJson = resultText.replace(/```json/g, "").replace(/```/g, "").trim();
+   
+    const dataList = JSON.parse(cleanJson); // Đây là một danh sách (Array)
+    // 3. Xử lý dữ liệu để ghi vào bảng
+    // Tạo tiêu đề
+    const headers = [["Giai đoạn", "Thời gian", "Nhiệt độ", "Độ ẩm", "Công việc thực hiện", "Lưu ý kỹ thuật"]];
+    sheet.getRange("A4:F4").setValues(headers)
+         .setFontWeight("bold")
+         .setBackground("#4caf50") // Màu xanh lá cây nông nghiệp
+         .setFontColor("white");
+    // Chuyển JSON thành mảng 2 chiều để ghi vào Sheet
+    let rows = [];
+    dataList.forEach(item => {
+      rows.push([item.giaidoan, item.thoigian, item.nhietdo, item.doam, item.congviec, item.luuy]);
+    });
+    if (rows.length > 0) {
+      sheet.getRange(5, 1, rows.length, 6).setValues(rows)
+           .setWrap(true) // Tự động xuống dòng
+           .setVerticalAlignment("middle");
+          
+      // Kẻ khung cho đẹp
+      sheet.getRange(4, 1, rows.length + 1, 6).setBorder(true, true, true, true, true, true);
+     
+      // Chỉnh độ rộng cột cho dễ đọc
+      sheet.setColumnWidth(1, 120); // Giai đoạn
+      sheet.setColumnWidth(5, 300); // Công việc (cần rộng nhất)
+      sheet.setColumnWidth(6, 200); // Lưu ý
+    }
+   
+    SpreadsheetApp.getUi().alert("✅ Đã lập xong quy trình trồng: " + tenNam);
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("Lỗi: " + e.toString());
+  }
+}
+function lapLoTrinh() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const tenNam = sheet.getRange("A2").getValue(); // Nhập tên nấm ở ô A2
+
+  if (!tenNam) return SpreadsheetApp.getUi().alert("Hãy nhập tên loại nấm vào ô A2 (Ví dụ: Nấm Rơm)");
+
+  // Không xóa dữ liệu cũ, mà tìm vị trí bắt đầu mới (sau bảng trước nếu có)
+  var lastRow = sheet.getLastRow();
+  var startRow = lastRow > 3 ? lastRow + 2 : 4; // Bắt đầu từ dòng 4 nếu trống, hoặc sau lastRow +1
+
+  try {
+    // 1. Tự động tìm model (giữ nguyên logic dò tìm model tốt nhất)
+    const modelUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`;
+    const resModels = fetchWithRetry(modelUrl, { "method": "get" });
+    const modelsJson = JSON.parse(resModels.getContentText());
+
+    let selectedModel = modelsJson.models.find(m => m.name.includes("gemini-1.5-flash"))?.name ||
+                        modelsJson.models.find(m => m.supportedGenerationMethods.includes("generateContent"))?.name;
+
+    // 2. Prompt chuyên biệt để tạo lộ trình linh hoạt tùy loại nấm
+    const prompt = `Tìm thông tin và lập lộ trình trồng nấm "${tenNam}" chi tiết theo ngày, dựa trên quy trình kỹ thuật chuẩn. 
+    Số ngày linh hoạt tùy theo loại nấm (ví dụ: một số loại chỉ 2 đợt thu hoạch, có thể ngắn hơn 30 ngày; một số loại dài hơn). 
+    Kết thúc lộ trình khi hoàn tất vụ trồng (bao gồm vệ sinh cuối vụ).
+    Trả về kết quả dưới dạng JSON là một Mảng (Array) các ngày (từ ngày 1 đến ngày cuối cùng phù hợp).
+    Các trường (key) bắt buộc cho mỗi ngày:
+    - "ngay" (Số ngày: 1, 2, 3,... đến ngày cuối)
+    - "giaidoan" (Ví dụ: Đợt 1: Ủ meo, Đợt 1: Nuôi tơ, Đợt 2: Thu hoạch,...)
+    - "temp_min" (Nhiệt độ tối thiểu, ví dụ: 32 hoặc -- nếu không áp dụng)
+    - "temp_max" (Nhiệt độ tối đa, ví dụ: 35 hoặc -- nếu không áp dụng)
+    - "hum_min" (Độ ẩm tối thiểu, ví dụ: 75 hoặc -- nếu không áp dụng)
+    - "hum_max" (Độ ẩm tối đa, ví dụ: 80 hoặc -- nếu không áp dụng)
+    - "nhiemvu" (Nhiệm vụ hoặc nhắc nhở chi tiết cho ngày đó, ví dụ: Đậy kín nilon, giữ ấm để hồi sức meo.)
+
+    Chỉ trả về JSON thuần, không kèm markdown hay giải thích.`;
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/${selectedModel}:generateContent?key=${API_KEY}`;
+    const payload = { "contents": [{ "parts": [{ "text": prompt }] }] };
+    const options = { "method": "post", "contentType": "application/json", "payload": JSON.stringify(payload) };
+
+    const response = fetchWithRetry(url, options);
+    const resultText = JSON.parse(response.getContentText()).candidates[0].content.parts[0].text;
+    const cleanJson = resultText.replace(/```json/g, "").replace(/```/g, "").trim();
+
+    const dataList = JSON.parse(cleanJson); // Đây là một danh sách (Array) với số phần tử linh hoạt
+
+    // 3. Xử lý dữ liệu để ghi vào bảng
+    // Tạo tiêu đề
+    const headers = [["Ngày", "Giai đoạn", "Temp Min", "Temp Max", "Hum Min", "Hum Max", "Nhiệm vụ AI nhắc nhở"]];
+    sheet.getRange(startRow, 1, 1, 7).setValues(headers)
+         .setFontWeight("bold")
+         .setBackground("#4caf50") // Màu xanh lá cây nông nghiệp
+         .setFontColor("white");
+
+    // Chuyển JSON thành mảng 2 chiều để ghi vào Sheet
+    let rows = [];
+    dataList.forEach(item => {
+      rows.push([item.ngay, item.giaidoan, item.temp_min, item.temp_max, item.hum_min, item.hum_max, item.nhiemvu]);
+    });
+
+    if (rows.length > 0) {
+      sheet.getRange(startRow + 1, 1, rows.length, 7).setValues(rows)
+           .setWrap(true) // Tự động xuống dòng
+           .setVerticalAlignment("middle");
+
+      // Kẻ khung cho đẹp
+      sheet.getRange(startRow, 1, rows.length + 1, 7).setBorder(true, true, true, true, true, true);
+
+      // Chỉnh độ rộng cột cho dễ đọc
+      sheet.setColumnWidth(1, 80); // Ngày
+      sheet.setColumnWidth(2, 150); // Giai đoạn
+      sheet.setColumnWidth(7, 300); // Nhiệm vụ (cần rộng nhất)
+    }
+
+    SpreadsheetApp.getUi().alert("✅ Đã lập xong lộ trình chi tiết cho: " + tenNam + " (Tổng " + rows.length + " ngày)");
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("Lỗi: " + e.toString());
+  }
+}
